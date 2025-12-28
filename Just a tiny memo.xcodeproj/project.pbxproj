@@ -15,9 +15,28 @@
 		D534BEEC2EDCC10200EFE9DD /* Just a tiny memo.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Just a tiny memo.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		D54F45802F017D44006551F1 /* Exceptions for "Just a tiny memo" folder in "Just a tiny memo" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Legacy/ContentView.swift,
+				Legacy/CropImageView.swift,
+				Legacy/ImagePersistenceService.swift,
+				Legacy/JustATinyMemoApp.swift,
+				"Legacy/NSImage+Extensions.swift",
+				Legacy/PanelContentView.swift,
+				Legacy/PanelManager.swift,
+			);
+			target = D534BEEB2EDCC10200EFE9DD /* Just a tiny memo */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		D534BEEE2EDCC10200EFE9DD /* Just a tiny memo */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				D54F45802F017D44006551F1 /* Exceptions for "Just a tiny memo" folder in "Just a tiny memo" target */,
+			);
 			path = "Just a tiny memo";
 			sourceTree = "<group>";
 		};
