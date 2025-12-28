@@ -23,9 +23,7 @@ actor ImagePersistenceService {
         
         return appDirectory
     }
-    
-    // MARK: - Async Load
-    
+        
     func load() async -> (original: NSImage?, menu: NSImage?) {
         guard let directory = try? ensureDirectoryExists() else { return (nil, nil) }
         
@@ -45,9 +43,7 @@ actor ImagePersistenceService {
         
         return (result.original, result.menu)
     }
-    
-    // MARK: - Async Save
-    
+        
     func save(original: NSImage, menu: NSImage) async throws {
         let directory = try ensureDirectoryExists()
         
@@ -58,18 +54,16 @@ actor ImagePersistenceService {
             guard let self else { return }
             
             let originalURL = directory.appendingPathComponent("original_image.png")
-            try await self.write(image: original, to: originalURL)
+            try self.write(image: original, to: originalURL)
             
             let resizedMenu = menu.resized(toHeight: targetHeight).eagerlyDecoded()
             let menuURL = directory.appendingPathComponent("menubar_image.png")
-            try await self.write(image: resizedMenu, to: menuURL)
+            try self.write(image: resizedMenu, to: menuURL)
             
         }.value
     }
-    
-    // MARK: - Helpers
-    
-    private func write(image: NSImage, to url: URL) throws {
+        
+    private nonisolated func write(image: NSImage, to url: URL) throws {
         guard let tiffData = image.tiffRepresentation,
               let bitmapImage = NSBitmapImageRep(data: tiffData),
               let pngData = bitmapImage.representation(using: .png, properties: [:]) else {
@@ -79,23 +73,24 @@ actor ImagePersistenceService {
         try pngData.write(to: url)
     }
     
-    func cleanup() {
+    func cleanup() async {
         guard let directory = try? ensureDirectoryExists() else { return }
         
         let allowedFiles = Set(["original_image.png", "menubar_image.png"])
         
-        do {
-            let fileURLs = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            
-            for fileURL in fileURLs {
-                if !allowedFiles.contains(fileURL.lastPathComponent) {
-                    try FileManager.default.removeItem(at: fileURL)
-                    logger.info("Cleaned up file: \(fileURL.lastPathComponent, privacy: .public)")
+        await Task.detached {
+            do {
+                let fileURLs = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                
+                for fileURL in fileURLs {
+                    if !allowedFiles.contains(fileURL.lastPathComponent) {
+                        try FileManager.default.removeItem(at: fileURL)
+                    }
                 }
+            } catch {
+                self.logger.error("Failed to cleanup directory: \(error.localizedDescription, privacy: .public)")
             }
-        } catch {
-            logger.error("Failed to cleanup directory: \(error.localizedDescription, privacy: .public)")
-        }
+        }.value
     }
     
     func fileURL(for imageName: String) -> URL? {
@@ -103,8 +98,6 @@ actor ImagePersistenceService {
         return directory.appendingPathComponent(imageName)
     }
 }
-
-// MARK: - NSImage Extensions
 
 extension NSImage {
     
@@ -152,18 +145,34 @@ extension NSImage {
     }
     
     func resized(toHeight newHeight: CGFloat) -> NSImage {
+        guard size.height > 0 else { return self }
+        
         let aspectRatio = size.width / size.height
         let newWidth = newHeight * aspectRatio
         let newSize = NSSize(width: newWidth, height: newHeight)
         
-        let newImage = NSImage(size: newSize)
-        newImage.lockFocus()
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: Int(newWidth),
+            pixelsHigh: Int(newHeight),
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .calibratedRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else { return self }
+        
+        rep.size = newSize
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
         self.draw(in: NSRect(origin: .zero, size: newSize),
                   from: NSRect(origin: .zero, size: self.size),
                   operation: .copy,
                   fraction: 1.0)
-        newImage.unlockFocus()
+        NSGraphicsContext.restoreGraphicsState()
         
-        return newImage
+        return NSImage(cgImage: rep.cgImage!, size: newSize)
     }
 }
