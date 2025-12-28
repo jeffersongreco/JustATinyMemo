@@ -1,9 +1,10 @@
-import Cocoa
+import AppKit
+import OSLog
 
-class ImagePersistenceService {
+actor ImagePersistenceService {
     static let shared = ImagePersistenceService()
     
-    private init() {}
+    private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "JustATinyMemo", category: "Persistence")
     
     private var appSupportDirectory: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -23,35 +24,65 @@ class ImagePersistenceService {
         return appDirectory
     }
     
-    func save(image: NSImage, withName name: String) throws -> URL {
-        let directory = try ensureDirectoryExists()
-        let fileURL = directory.appendingPathComponent(name)
+    // MARK: - Async Load
+    
+    func load() async -> (original: NSImage?, menu: NSImage?) {
+        guard let directory = try? ensureDirectoryExists() else { return (nil, nil) }
         
+        let originalURL = directory.appendingPathComponent("original_image.png")
+        let menuURL = directory.appendingPathComponent("menubar_image.png")
+        
+        struct ImageTransport: @unchecked Sendable {
+            let original: NSImage?
+            let menu: NSImage?
+        }
+        
+        let result = await Task.detached {
+            let original = NSImage(contentsOf: originalURL)?.eagerlyDecoded()
+            let menu = NSImage(contentsOf: menuURL)?.eagerlyDecoded()
+            return ImageTransport(original: original, menu: menu)
+        }.value
+        
+        return (result.original, result.menu)
+    }
+    
+    // MARK: - Async Save
+    
+    func save(original: NSImage, menu: NSImage) async throws {
+        let directory = try ensureDirectoryExists()
+        
+        let menuBarHeight = await MainActor.run { NSStatusBar.system.thickness }
+        let targetHeight = max(18, menuBarHeight - 4)
+        
+        try await Task.detached { [weak self] in
+            guard let self else { return }
+            
+            let originalURL = directory.appendingPathComponent("original_image.png")
+            try await self.write(image: original, to: originalURL)
+            
+            let resizedMenu = menu.resized(toHeight: targetHeight).eagerlyDecoded()
+            let menuURL = directory.appendingPathComponent("menubar_image.png")
+            try await self.write(image: resizedMenu, to: menuURL)
+            
+        }.value
+    }
+    
+    // MARK: - Helpers
+    
+    private func write(image: NSImage, to url: URL) throws {
         guard let tiffData = image.tiffRepresentation,
               let bitmapImage = NSBitmapImageRep(data: tiffData),
               let pngData = bitmapImage.representation(using: .png, properties: [:]) else {
             throw NSError(domain: "ImagePersistenceService", code: 2, userInfo: [NSLocalizedDescriptionKey: "Failed to convert image to PNG"])
         }
         
-        try pngData.write(to: fileURL)
-        return fileURL
-    }
-    
-    func load(imageName: String) -> NSImage? {
-        guard let directory = try? ensureDirectoryExists() else { return nil }
-        let fileURL = directory.appendingPathComponent(imageName)
-        return NSImage(contentsOf: fileURL)
-    }
-    
-    func fileURL(for imageName: String) -> URL? {
-        guard let directory = try? ensureDirectoryExists() else { return nil }
-        return directory.appendingPathComponent(imageName)
+        try pngData.write(to: url)
     }
     
     func cleanup() {
         guard let directory = try? ensureDirectoryExists() else { return }
         
-        let allowedFiles = Set(["original_image.png", "cropped_image.png", "menubar_image.png"])
+        let allowedFiles = Set(["original_image.png", "menubar_image.png"])
         
         do {
             let fileURLs = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
@@ -59,11 +90,80 @@ class ImagePersistenceService {
             for fileURL in fileURLs {
                 if !allowedFiles.contains(fileURL.lastPathComponent) {
                     try FileManager.default.removeItem(at: fileURL)
-                    print("Cleaned up file: \(fileURL.lastPathComponent)")
+                    logger.info("Cleaned up file: \(fileURL.lastPathComponent, privacy: .public)")
                 }
             }
         } catch {
-            print("Failed to cleanup directory: \(error)")
+            logger.error("Failed to cleanup directory: \(error.localizedDescription, privacy: .public)")
         }
+    }
+    
+    func fileURL(for imageName: String) -> URL? {
+        guard let directory = try? ensureDirectoryExists() else { return nil }
+        return directory.appendingPathComponent(imageName)
+    }
+}
+
+// MARK: - NSImage Extensions
+
+extension NSImage {
+    
+    func eagerlyDecoded() -> NSImage {
+        let imageSize = self.size
+        
+        let scale = AppKit.NSScreen.main?.backingScaleFactor ?? 2.0
+        
+        let pixelWidth = Int(imageSize.width * scale)
+        let pixelHeight = Int(imageSize.height * scale)
+        
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelWidth,
+            pixelsHigh: pixelHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .calibratedRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ) else {
+            return self
+        }
+        
+        rep.size = imageSize
+        
+        NSGraphicsContext.saveGraphicsState()
+        let context = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current = context
+        
+        self.draw(in: NSRect(origin: .zero, size: imageSize),
+                  from: .zero,
+                  operation: .copy,
+                  fraction: 1.0)
+        
+        NSGraphicsContext.restoreGraphicsState()
+        
+        if let cgImage = rep.cgImage {
+            return NSImage(cgImage: cgImage, size: imageSize)
+        }
+        
+        return self
+    }
+    
+    func resized(toHeight newHeight: CGFloat) -> NSImage {
+        let aspectRatio = size.width / size.height
+        let newWidth = newHeight * aspectRatio
+        let newSize = NSSize(width: newWidth, height: newHeight)
+        
+        let newImage = NSImage(size: newSize)
+        newImage.lockFocus()
+        self.draw(in: NSRect(origin: .zero, size: newSize),
+                  from: NSRect(origin: .zero, size: self.size),
+                  operation: .copy,
+                  fraction: 1.0)
+        newImage.unlockFocus()
+        
+        return newImage
     }
 }

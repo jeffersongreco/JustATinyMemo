@@ -1,10 +1,3 @@
-//
-//  PanelManager.swift
-//  Just a tiny memo
-//
-//  Created by Greco on 27/12/25.
-//
-
 import SwiftUI
 import AppKit
 import PanelKit
@@ -28,6 +21,7 @@ class PanelManager: NSObject, ObservableObject {
             content: AnyView(contentView)
         )
         
+        // Initial async load
         Task {
             await loadImages()
         }
@@ -49,13 +43,9 @@ class PanelManager: NSObject, ObservableObject {
     func updateImage(newPanelImage: NSImage, newMenuBarImage: NSImage) {
         self.panelImage = newPanelImage
         self.menuBarImage = newMenuBarImage
-        
-        // Optional: If you want to ensure the file system is also synced for next launch
-        // you would save here, or assume the caller saved it.
     }
     
-    /// Alternatively, if your Settings only writes to disk and doesn't pass the image back:
-    /// Call this to force a background reload.
+    /// Trigger a reload from disk if external changes occurred.
     func reloadImages() {
         Task {
             await loadImages()
@@ -65,28 +55,12 @@ class PanelManager: NSObject, ObservableObject {
     // MARK: - Async Loading Logic
     
     private func loadImages() async {
-        // Run heavy I/O on a background thread
-        let (pImg, mImg) = await Task.detached(priority: .userInitiated) { () -> (NSImage?, NSImage?) in
-            let p = ImagePersistenceService.shared.load(imageName: "original_image.png")
-            let m = ImagePersistenceService.shared.load(imageName: "menubar_image.png")
-            // Crucial: Force the image to decode now, not when drawn
-            p?.precache()
-            return (p, m)
-        }.value
+        // The Actor now handles the heavy lifting (IO, Decoding, Resizing)
+        // in its own detached tasks, so we can simply await the result here.
+        let (pImg, mImg) = await ImagePersistenceService.shared.load()
         
-        // Update UI on MainActor
+        // Update Published properties on MainActor
         self.panelImage = pImg
         self.menuBarImage = mImg
-    }
-}
-
-// MARK: - Helper Extension
-
-extension NSImage {
-    /// Forces the image data to be read from disk into memory immediately.
-    func precache() {
-        // Drawing into a context forces the bitmap data to be decoded.
-        // This prevents a "hiccup" the first time the panel is presented.
-        _ = self.cgImage(forProposedRect: nil, context: nil, hints: nil)
     }
 }

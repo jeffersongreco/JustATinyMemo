@@ -1,34 +1,44 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var currentImageOriginal: NSImage?
-    @State private var currentImageCropped: NSImage?
+    // 1. Connect to the shared Source of Truth
+    @EnvironmentObject var panelManager: PanelManager
+    
     @State private var imageToCrop: NSImage?
     @State private var isImporting = false
     
-    private func loadSavedImage() {
-        if let savedOriginal = ImagePersistenceService.shared.load(
-            imageName: "original_image.png"
-        ) {
-            self.currentImageOriginal = savedOriginal
-        }
-        
-        if let savedCropped = ImagePersistenceService.shared.load(
-            imageName: "cropped_image.png"
-        ) {
-            self.currentImageCropped = savedCropped
+    // MARK: - Logic
+    
+    private func saveImages(original: NSImage, cropped: NSImage) {
+        Task {
+            // 1. Optimistic UI Update (Instant)
+            // We manually resize the cropped image for the menu bar state so the
+            // in-memory version matches what the persistence service will create on disk.
+            let menuBarHeight = NSStatusBar.system.thickness
+            let targetHeight = max(18, menuBarHeight - 4)
+            let smallIcon = cropped.resized(toHeight: targetHeight)
+            
+            panelManager.updateImage(newPanelImage: original, newMenuBarImage: smallIcon)
+            
+            // 2. Persist to Disk (Background)
+            do {
+                try await ImagePersistenceService.shared.save(original: original, menu: cropped)
+                await ImagePersistenceService.shared.cleanup()
+            } catch {
+                print("Failed to save images: \(error)")
+            }
         }
     }
+    
+    // MARK: - Body
     
     var body: some View {
         NavigationStack {
             VStack {
                 ZStack {
                     ZStack {
-                        
-                        // Wallpaper aqui
-                        
-                        if let image = currentImageOriginal {
+                        // 3. Read directly from Manager
+                        if let image = panelManager.panelImage {
                             Image(nsImage: image)
                                 .resizable()
                                 .interpolation(.high)
@@ -54,7 +64,7 @@ struct ContentView: View {
                     Spacer()
                     
                     VStack {
-                        Button("Chose Image…") {
+                        Button("Choose Image…") {
                             isImporting = true
                         }
                     }
@@ -78,15 +88,11 @@ struct ContentView: View {
                 switch result {
                 case .success(let urls):
                     if let url = urls.first {
-                        if url.startAccessingSecurityScopedResource() {
-                            defer { url.stopAccessingSecurityScopedResource() }
-                            if let image = NSImage(contentsOf: url) {
-                                self.imageToCrop = image
-                            }
-                        } else {
-                            if let image = NSImage(contentsOf: url) {
-                                self.imageToCrop = image
-                            }
+                        let accessing = url.startAccessingSecurityScopedResource()
+                        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                        
+                        if let image = NSImage(contentsOf: url) {
+                            self.imageToCrop = image
                         }
                     }
                 case .failure(let error):
@@ -106,52 +112,12 @@ struct ContentView: View {
                 )
             }
             .frame(width: 553)
-            .onAppear {
-                loadSavedImage()
-            }
-        }
-    }
-    
-    private func saveImages(original: NSImage, cropped: NSImage) {
-        do {
-            // Save original
-            _ = try ImagePersistenceService.shared.save(
-                image: original,
-                withName: "original_image.png"
-            )
-            // Save cropped (high-res)
-            _ = try ImagePersistenceService.shared.save(
-                image: cropped,
-                withName: "cropped_image.png"
-            )
-            
-            // Resize and save menu bar image
-            // Use system thickness minus a small padding (e.g. 4px total, 2px top/bottom) 
-            // to ensure it fits nicely. Standard thickness is usually 22 or 24.
-            let menuBarHeight = NSStatusBar.system.thickness
-            let targetHeight = max(18, menuBarHeight - 4) 
-            let resizedImage = cropped.resized(toHeight: targetHeight)
-            // Set template to true so it adapts to light/dark mode if it's a monochrome icon, 
-            // though for user photos we might want to keep it as is. 
-            // User didn't specify, so we keep original colors.
-            
-            _ = try ImagePersistenceService.shared.save(
-                image: resizedImage,
-                withName: "menubar_image.png"
-            )
-            
-            // Cleanup old files
-            ImagePersistenceService.shared.cleanup()
-            
-            // Update current image state
-            self.currentImageOriginal = original
-            self.currentImageCropped = cropped
-        } catch {
-            print("Failed to save images: \(error)")
+            // Removed .onAppear { loadSavedImage() }
         }
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(PanelManager())
 }
